@@ -5,6 +5,7 @@
 // to answer "did I break something?" without a human clicking through a menu.
 
 #include "console_ui.h"
+#include "presenter.h"
 #include "task.h"
 #include "task_manager.h"
 #include "task_store.h"
@@ -190,6 +191,37 @@ void testPriorityParsing() {
     EXPECT(todo::priorityToString(todo::Priority::Low) == "Low");
 }
 
+// ------------------------------------------------------------- presentation --
+
+// presenter 里全是纯字符串，所以不需要开窗口就能把"界面显示什么"测死。
+void testPresenter() {
+    section("presenter turns data into display text");
+
+    EXPECT(todo::statusLabel(true) == "已完成");
+    EXPECT(todo::statusLabel(false) == "待办");
+    EXPECT(todo::priorityLabel(todo::Priority::High) == "高");
+    EXPECT(todo::priorityLabel(todo::Priority::Medium) == "中");
+    EXPECT(todo::priorityLabel(todo::Priority::Low) == "低");
+
+    // 换行必须压成字面量 \n，否则表格行会被撑坏
+    EXPECT(todo::singleLine("plain") == "plain");
+    EXPECT(todo::singleLine("a\nb") == "a\\nb");
+    EXPECT(todo::singleLine("a\r\nb") == "a\\nb");  // CRLF 只算一次换行
+
+    EXPECT(todo::summaryLabel(0, 0).find("还没有任务") == 0u);
+    EXPECT(todo::summaryLabel(3, 1) == "共 3 条 · 已完成 1 条");
+
+    EXPECT(todo::windowTitle("tasks.txt", false) == "待办清单 — tasks.txt");
+    EXPECT(todo::windowTitle("tasks.txt", true) == "待办清单 — tasks.txt *");
+
+    EXPECT(todo::resultLabel(todo::success("task added")) == "已添加任务");
+    EXPECT(todo::resultLabel(todo::failure("description cannot be empty")) ==
+           "任务描述不能为空");
+    EXPECT(todo::resultLabel(todo::failure("no task with id 7")) == "找不到 ID 为 7 的任务");
+    // 认不出来的消息原样透出，绝不能悄悄吞掉
+    EXPECT(todo::resultLabel(todo::failure("something new")) == "something new");
+}
+
 // ---------------------------------------------------------------- the menu --
 
 void testScriptedUi() {
@@ -263,6 +295,7 @@ int main() {
     testValidation();
     testCorruptLineIsSkipped();
     testPriorityParsing();
+    testPresenter();
     testScriptedUi();
     testEofDoesNotHang();
     testSaveFailureIsReported();
