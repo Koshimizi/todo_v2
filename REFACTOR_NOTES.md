@@ -7,12 +7,13 @@
 
 | | 旧版 | 新版 |
 |---|---|---|
-| 源文件 | 5 个 | 9 个（含 4 个头文件） |
-| 代码行数 | 475 | 785 |
-| 测试 | 0 | 272 行 / 49 个断言 |
+| 源文件 | 5 个 | 12 个（含 5 个头文件）+ 1 个界面文件 |
+| 代码行数 | 475 | 1226（核心 + 测试）+ 1259（界面） |
+| 测试 | 0 | 303 行 / 65 个断言 |
 | 编译警告（MSVC /W4） | 2 个 | 0 个 |
 | 已知行为 bug | 4 个（ID 跳号、`\|` 损坏、EOF 死循环、编辑空描述不校验） | 0 |
-| 中文 Windows 乱码 | 是 | 否（输出全 ASCII） |
+| 中文乱码 | 是 | 否（源码 UTF-8 + 数据 UTF-8 + 输出 ASCII） |
+| 前端 | 只有控制台 | 控制台 + Win32 图形界面，共用一套内核 |
 | 能否自动测试 | 不能 | 能（`ctest`） |
 
 **行数变多了 65%，这不是退步。** 增加的部分全都在做旧版没做的事：错误处理、转义、分层接口、测试。旧版是"能跑就行"，新版是"能改、能测、能维护"。真实项目的代码量大多花在这些地方，而不是花在功能上——这一点是力扣永远不会告诉你的。
@@ -20,39 +21,26 @@
 ## 新的分层
 
 ```
-                +------------------+
-                |     main.cpp     |   只负责把东西接起来（10 行）
-                +--------+---------+
-                         |
-                +--------v---------+
-                |   ConsoleUi      |   所有 cin / cout 都在这里
-                |  菜单、提示、显示  |   流是注入的，所以能被测试驱动
-                +--------+---------+
-                         |
-                +--------v---------+
-                |   TaskManager    |   业务规则：发 ID、增删改、校验
-                |  返回 Result      |   不打印任何东西
-                +--------+---------+
-                         |
-                +--------v---------+
-                |    TaskStore     |   只负责文件读写 + 格式转义
-                |  load() / save() |
-                +--------+---------+
-                         |
-                +--------v---------+
-                |      Task        |   纯数据：4 个字段 + 读写方法
-                |  无任何 I/O       |   一行 cout 都没有
-                +------------------+
+        todo_app.exe（控制台）          todo_gui.exe（窗口）
+                 \                          /
+            ConsoleUi                   Win32Ui          ← 两个平行的 UI 层
+                 \                          /
+                  \                     Presenter        ← 数据 → 显示文字（纯字符串）
+                   \                       /
+                    \                     /
+                     +----- TaskManager --+          ← 业务规则：发 ID、增删改、校验
+                            TaskStore                ← 只负责文件读写 + 转义
+                              Task                   ← 纯数据，无任何 I/O
 ```
 
 一句话记住这套东西为什么这么分：**每一层只能"往下"依赖，而且只做一件事**。
-`Task` 不知道有文件，`TaskStore` 不知道有菜单，`TaskManager` 不知道有屏幕，`ConsoleUi` 不知道数据存在哪。
+`Task` 不知道有文件，`TaskStore` 不知道有菜单，`TaskManager` 不知道有屏幕，`ConsoleUi` 和 `Win32Ui` 都不知道数据存在哪。
 
 好处很具体：
 
 - 想加"按优先级排序"？只动 `TaskManager`，界面和存储都不用碰。
-- 想换 JSON 存储？只重写 `TaskStore`，其他三层的代码一个字都不用改。
-- 想加图形界面？写一个新的 UI 类去调 `TaskManager`，现在的代码全留着。
+- 想换 JSON 存储？只重写 `TaskStore`，其他几层的代码一个字都不用改。
+- 想加图形界面？写一个新的 UI 类去调 `TaskManager`——**这件事已经做了**：`gui/win32_ui.cpp` 加进来时，核心层（Task / TaskStore / TaskManager）**一行都没改**。
 
 ## 九个关键决定
 
@@ -143,6 +131,25 @@ EXPECT(manager.tasks().size() == 1u);
 去掉所有 emoji，用 `[OK]` / `[X]` / `[!]` 表示状态，任何代码页的终端都不会乱码。
 `CMakeLists.txt` 里给 MSVC 加 `/utf-8`，把"源文件是 UTF-8"这件事显式告诉编译器。
 
+### 10. 界面层可以加一层，内核不用动
+
+图形界面**不是**"把程序改造成 GUI"，而是**并列长出第二个前端**：
+
+```
+todo_core（Task / TaskStore / TaskManager / Presenter） ← 一行没改
+        ├── ConsoleUi → todo_app.exe（控制台）
+        └── Win32Ui   → todo_gui.exe（窗口）
+```
+
+具体做法是三步，没有一步需要碰核心逻辑：
+
+1. 把"数据该显示成什么字"抽成 `Presenter`（`"已完成"` / `"共 3 条 · 已完成 1 条"` / 英文 `Result` → 中文提示）。
+   它是纯 `std::string`，所以**界面文案也能进 `ctest`**——这是这次重构最划算的一笔。
+2. 用 Win32 建窗口：一个 `CreateWindowExW` 建主窗口，`WM_COMMAND` 收按钮点击，`WM_NOTIFY` 收表格事件。
+3. 在 `CMakeLists.txt` 里加一个 `WIN32` 子系统的目标，链接 `comctl32`/`user32`/`gdi32`（全部来自 Windows SDK，**零第三方依赖**，也没有 `.rc` 资源文件）。
+
+**学到的一课**：所谓"架构好"，不是画出来好看，而是**加一个新前端时能不能不动老代码**。这里能。
+
 ## 我写的时候踩到的三个坑（都值得你知道）
 
 ### 坑一：most vexing parse
@@ -182,6 +189,56 @@ MSVC `/W4` 直接报了 C4267。新版用 `std::size_t` 循环 + 显式 `static_
 
 **警告不是噪音。** 那些"能跑但编译器在抱怨"的地方，通常正是隐藏 bug 的地方。
 
+## 加界面时新踩的三个坑
+
+### 坑四：`WM_NCCREATE` 里直接 `return TRUE`，窗口标题会消失
+
+这是这次最隐蔽的一个。窗口过程里我们这样存 `this`：
+
+```cpp
+if (message == WM_NCCREATE) {
+    ...存 this...
+    return TRUE;              // ← 看起来最自然，其实漏了一步
+}
+```
+
+结果编辑对话框的标题栏是**空白**的，`GetWindowText` 也拿到空字符串。
+
+原因：**窗口标题是默认窗口过程在 `WM_NCCREATE` 里记下来的**（它从 `CREATESTRUCT::lpszName` 取）。
+你把这条消息吃掉、不回给它，标题就从来没被保存过。正确写法是存完 `this` 之后继续往下传：
+
+```cpp
+return DefWindowProcW(hwnd, message, wParam, lParam);
+```
+
+主窗口之所以看着正常，是因为我们后来用 `SetWindowTextW` 又设了一遍标题，把问题盖住了——**被盖住的 bug 最危险**，
+这次是截图才把它揪出来的（编译零警告、测试全绿，它照样在）。
+
+### 坑五：按 DPI 缩放的窗口可能比屏幕还大
+
+150% 缩放下，`900x640` 的"逻辑"尺寸变成 **1350x960 物理像素**。1366x768 的笔记本根本放不下，
+Windows 会把窗口压小，而我们是按压缩前的尺寸算列宽的——于是「任务」列宽到把「优先级」和「ID」挤出屏幕。
+
+修法：创建窗口前先用 `SystemParametersInfoW(SPI_GETWORKAREA, ...)` 读工作区，把初始尺寸夹进去，
+并且**最小尺寸不能大于初始尺寸**（否则用户拖不动窗口）。
+
+顺带一个测量陷阱：如果你的探测程序是 DPI-unaware 的，它读到的所有坐标都是 1/1.5 的虚拟坐标，
+看起来"窗口只有 900x640"——**先 `SetProcessDpiAwarenessContext` 再测量**，否则会被自己的工具骗。
+
+### 坑六：一处编码不通，两个前端就互相喂乱码
+
+`ISSUES.md` 问题 3 只解决了"提示文字乱码"（输出全 ASCII），**没解决用户输入的数据**：
+控制台把用户打的中文按代码页（GBK）原样写盘，图形界面用 `QString::fromStdString` / UTF-8 去读，必然是乱码。
+
+这次的修法是**把"文件是 UTF-8"定成硬约定**，然后在两个边界上做转换：
+
+- 图形界面：`MultiByteToWideChar` / `WideCharToMultiByte`，控件是 UTF-16、核心是 UTF-8
+- 控制台：`SetConsoleCP(CP_UTF8)` + `SetConsoleOutputCP(CP_UTF8)`，让终端也按 UTF-8 收发
+- 老数据：启动时检测一次，不是合法 UTF-8 就**先备份 `tasks.txt.bak` 再转码**（只发生一次）
+
+**原则**：编码问题不要"到处打补丁"，要**选一个内部表示（这里是 UTF-8），只在边界转换**。
+边界只有两个：用户输入、用户输出。中间所有层都不用知道编码存在。
+
 ## 建议的阅读顺序
 
 不要从 `main.cpp` 开始。按**依赖从下往上**读：
@@ -189,9 +246,12 @@ MSVC `/W4` 直接报了 C4267。新版用 `std::size_t` 循环 + 显式 `static_
 1. [include/task.h](include/task.h) + [src/task.cpp](src/task.cpp) —— 40 行，先看懂"纯数据类"长什么样
 2. [include/task_store.h](include/task_store.h) → [src/task_store.cpp](src/task_store.cpp) 的 `escapeField` / `splitEscaped` —— 最难但最有价值的部分
 3. [include/task_manager.h](include/task_manager.h) → [src/task_manager.cpp](src/task_manager.cpp) —— 看 `Result` 怎么替代"直接打印"
-4. [src/console_ui.cpp](src/console_ui.cpp) —— 最后看，此时你已经知道它在调什么了
-5. [src/main.cpp](src/main.cpp) —— 10 行，看"装配"该有多短
-6. [tests/test_todo.cpp](tests/test_todo.cpp) —— 回头看测试，每个 `EXPECT` 都是前面某个决定的存在理由
+4. [src/presenter.cpp](src/presenter.cpp) —— 90 行，看"数据和界面之间"该隔一层什么
+5. [src/console_ui.cpp](src/console_ui.cpp) —— 此时你已经知道它在调什么了
+6. [src/main.cpp](src/main.cpp) —— 10 行，看"装配"该有多短
+7. [gui/win32_ui.cpp](gui/win32_ui.cpp) —— **最后看**。它长，但结构极简单：建控件 → 收消息 → 调 `TaskManager` → 刷界面。
+   读的时候只盯三件事：`wndProc` 里每个 `case` 对应哪个用户动作、`layout()` 怎么算坐标、`wideFromUtf8` 在哪被调用
+8. [tests/test_todo.cpp](tests/test_todo.cpp) —— 回头看测试，每个 `EXPECT` 都是前面某个决定的存在理由
 
 ## 故意没做的事（留给你）
 
