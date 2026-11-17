@@ -4,9 +4,11 @@ out/
 
 # Data produced at runtime
 tasks.txt
+tasks.txt.bak
 test_*.txt
 
 # IDE
+.vs/
 .vscode/
 .idea/
 *.user
