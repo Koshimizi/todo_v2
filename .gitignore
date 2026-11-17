@@ -1,0 +1,13 @@
+# Build output
+build/
+out/
+
+# Data produced at runtime
+tasks.txt
+test_*.txt
+
+# IDE
+.vscode/
+.idea/
+*.user
+*.suo
