@@ -22,7 +22,6 @@ private:
     void showMenu() const;
     void showTasks() const;
     void report(const Result& result) const;
-
     void handleAdd();
     void handleEdit();
     void handleRemove();
